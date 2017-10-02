@@ -236,6 +236,34 @@ class _Request(object):
         raise ApiError(usr_msg='Failed to get proper ' +
                        'response from backend.')
 
+    def delete(self, path, params=''):
+        """
+        PUT Method Wrapper of the REST API
+        """
+        self.result = None
+        headers = {'Content-Type': 'application/json',
+                   'x-qx-client-application': self.client_application}
+        url = str(self.credential.config['url'] + path + '?access_token=' +
+                  self.credential.get_token() + params)
+        retries = self.retries
+        while retries > 0:
+            respond = requests.delete(url, headers=headers,
+                                    verify=self.verify)
+            if not self.check_token(respond):
+                respond = requests.delete(url, headers=headers,
+                                        verify=self.verify)
+            if self._response_good(respond):
+                if self.result:
+                    return self.result
+                else:
+                    return respond.json()
+            else:
+                retries -= 1
+                time.sleep(self.timeout_interval)
+        # timed out
+        raise ApiError(usr_msg='Failed to get proper ' +
+                       'response from backend.')
+
     def _response_good(self, respond):
         """check response
 
@@ -248,15 +276,19 @@ class _Request(object):
         Raises:
             ApiError: response isn't formatted properly.
         """
-        if respond.status_code != requests.codes.ok:
+        ok_codes = [200, 201, 204]
+        if int(respond.status_code) not in ok_codes:
             self.log.warning('Got a {} code response to {}: {}'.format(
                 respond.status_code,
                 respond.url,
                 respond.text))
             return self._parse_response(respond)
         try:
-            self.result = respond.json()
-        except (json.JSONDecodeError, ValueError):
+            if respond.status_code == 204:  # not content as response but ok
+                self.result = {"status": "ok"}
+            else:
+                self.result = respond.json()
+        except:
             usr_msg = 'device server returned unexpected http response'
             dev_msg = usr_msg + ': ' + respond.text
             raise ApiError(usr_msg=usr_msg, dev_msg=dev_msg)
@@ -722,7 +754,7 @@ class IBMQuantumExperience(object):
                     if backend.get('status') == 'on' and
                     backend.get('simulator') is True]
 
-    def get_my_credits(self, access_token=None, user_id=None):
+    def get_my_credits(self, raw=None, access_token=None, user_id=None):
         """
         Get the the credits by user to use in the QX Platform
         """
@@ -748,6 +780,61 @@ class IBMQuantumExperience(object):
     Methods to run by admins, to manage users
     '''
 
+    def _get_user_id_from_email(self, email):
+        """
+        Get a user id from email
+        """
+        where = {
+            "where": {
+                "email": email
+            }
+        }
+
+        params = "&filter="+json.dumps(where)
+
+        user = self.req.get('/users/findOne', params)
+        if user and ("id" in user):
+            return user["id"]
+        return None
+
+    def _get_user_group_id_from_name(self, name, access_token=None,
+                                     user_id=None):
+        """
+        Get a user group id from user group name
+        """
+        if name is None:
+            return None
+        user_groups = self.get_user_groups(access_token, user_id)
+        for group in user_groups:
+            if ("name" in group) and (group['name'].lower() == name.lower()):
+                return group['id']
+        return None
+
+    def _get_topology_id_from_name(self, name, access_token=None,
+                                   user_id=None):
+        """
+        Get a topology id from topology name
+        """
+        topology = self.get_topology(name, access_token, user_id)
+        if "id" in topology:
+            return topology['id']
+        return None
+
+    def get_user(self, email):
+        """
+        Get a user from email
+        """
+        where = {
+            "where": {
+                "email": email
+            }
+        }
+
+        params = "&filter="+json.dumps(where)
+
+        user = self.req.get('/users/findOne', params)
+        return user
+
     def create_user(self, name, email, password, institution,
                     access_token=None, user_id=None):
         """
@@ -761,14 +848,119 @@ class IBMQuantumExperience(object):
             return {"error": "Not credentials valid"}
 
         data = {
-                'firstName': name,
-                'email': email,
-                'password': password,
-                'institution': institution
-               }
+            'firstName': name,
+            'email': email,
+            'password': password,
+            'institution': institution
+        }
 
         user = self.req.post('/users/createByAdmin', data=json.dumps(data))
         return user
+
+    def edit_user(self, email, password=None, institution=None,
+                  blocked=None, credits=None, usernamepublic=None,
+                  access_token=None, user_id=None):
+        """
+        Edit a user by admin
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        user = self.get_user(email)
+
+        if not user:
+            return {"error": "Not user found"}
+
+        user_id = user["id"]
+        user_credits = user["credit"]
+
+        data = {}
+
+        if institution:
+            data["institution"] = institution
+        if blocked or (blocked is False):
+            data["blocked"] = blocked
+        if credits:
+            data["credit"] = user_credits
+            data["credit"]["remaining"] = credits
+        if usernamepublic:
+            data["usernamePublic"] = usernamepublic
+        if password:
+            data["password"] = password
+
+        user = self.req.put('/users/'+user_id, data=json.dumps(data))
+        return user
+
+    def create_user_group(self, name, description, is_general=False, 
+                          access_token=None, user_id=None):
+        """
+        Create an user group to asign to users
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        data = {
+            "name": name,
+            "description": description,
+            "isGeneral": is_general,
+            "ownerId": self.req.credential.get_user_id()
+        }
+
+        user_group = self.req.post('/UserGroups', data=json.dumps(data))
+        return user_group
+
+    def edit_user_group(self, name, description, is_general=False, 
+                        access_token=None, user_id=None):
+        """
+        Create an user group to asign to users
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        id_user_group = self.get_user_group(name)["id"]
+
+        data = {
+            "description": description,
+            "isGeneral": is_general,
+        }
+
+        user_group = self.req.put('/UserGroups/' + id_user_group,
+                                  data=json.dumps(data))
+        return user_group
+
+    def get_user_group(self, name, access_token=None, user_id=None):
+        """
+        Get user group to asign to users
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        where = {
+            "where": {
+                "name": name
+            }
+        }
+
+        params = "&filter="+json.dumps(where)
+
+        user_group = self.req.get('/UserGroups/findOne', params)
+        return user_group
 
     def get_user_groups(self, access_token=None, user_id=None):
         """
@@ -784,7 +976,7 @@ class IBMQuantumExperience(object):
         user_groups = self.req.get('/UserGroups')
         return user_groups
 
-    def set_user_group(self, id_user, name_user_group,
+    def set_user_group(self, email, name_user_group,
                        access_token=None, user_id=None):
         """
         Set user group to User
@@ -796,20 +988,503 @@ class IBMQuantumExperience(object):
         if not self.check_credentials():
             return {"error": "Not credentials valid"}
 
-        id_user_group = None
-        user_groups = self.get_user_groups(access_token, user_id)
-        for group in user_groups:
-            if group['name'].lower() == name_user_group.lower():
-                id_user_group = group['id']
-                break
+        id_user_group = self._get_user_group_id_from_name(name_user_group,
+                                                          access_token=access_token, user_id=user_id)  # noqa
 
-        if id_user_group:
+        id_user = self._get_user_id_from_email(email)
+        
+        if id_user_group and id_user:
             user = self.req.put('/users/' + str(id_user) +
                                 '/groups/rel/' + str(id_user_group))
             return user
         else:
             raise ApiError(usr_msg='User group doesnt exist ' +
                            name_user_group)
+
+    def unset_user_group(self, email, name_user_group,
+                         access_token=None, user_id=None):
+        """
+        Unset user group to User
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        id_user_group = self._get_user_group_id_from_name(name_user_group,
+                                                          access_token=access_token, user_id=user_id)  # noqa
+
+        id_user = self._get_user_id_from_email(email)
+        
+        if id_user_group and id_user:
+            user = self.req.delete('/users/' + str(id_user) +
+                                   '/groups/rel/' + str(id_user_group))
+            return user
+        else:
+            raise ApiError(usr_msg='User group or user doesnt exist ' +
+                           name_user_group + ":" + email)
+
+    def get_topologies(self, access_token=None, user_id=None):
+        """
+        Get topologies used in the backends
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        topologies = self.req.get('/Topologies')
+        return topologies
+
+    def get_topology(self, name, access_token=None, user_id=None):
+        """
+        Get topology by name
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        where = {
+            "where": {
+                "name.en": name
+            }
+        }
+
+        params = "&filter="+json.dumps(where)
+
+        topology = self.req.get('/Topologies/findOne', params)
+
+        return topology
+
+    def create_topology(self, name, description, adjacency_matrix,
+                        qubits, execution_types, is_simulator=False,
+                        is_hidden=False, tasks_queue=None,
+                        results_queue=None, device_status_queue=None,
+                        status_queue=None, is_default=False,
+                        qasm_header="IBMQASM 2.0;\n", picture_url=None,
+                        access_token=None, user_id=None):
+        """
+        Create topology
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        e_types = []
+        if isinstance(execution_types, (list, tuple)):
+            for e_type in execution_types:
+                if (e_type.lower() == 'simulator'):
+                    e_types.append('sim_trivial_2')
+                elif (e_type.lower() == 'real'):
+                    e_types.append('real')
+                else:
+                    return {"error": "Invalid Execution Type, only allowed " +
+                                     "'simulator' and 'real': " + e_type}
+        else:
+            return {"error": "Not valid execution types"}
+
+        if (len(e_types) == 0):
+            return {"error": "Not valid execution types"}
+
+        data = {
+            "name": {
+                "en": name
+            },
+            "description": {
+                "en": description
+            },
+            "topology": {
+                "adjacencyMatrix": adjacency_matrix,
+                "qasmHeader": qasm_header
+            },
+            "qubits": qubits,
+            "executionTypes": e_types,
+            "attributes": {
+                "queues": {},
+                "status": {}
+            },
+            "default": is_default,
+            "isSimulator": is_simulator,
+            "isHidden": is_hidden
+        }
+
+        if picture_url:
+            data["picture"] = picture_url
+
+        if tasks_queue:
+            data["attributes"]["queues"]["tasks"] = tasks_queue
+        else:
+            data["attributes"]["queues"]["tasks"] = "tasks-" + name
+
+        if results_queue:
+            data["attributes"]["queues"]["results"] = results_queue
+        else:
+            data["attributes"]["queues"]["results"] = "results-" + name
+
+        if device_status_queue:
+            data["attributes"]["status"]["device"] = device_status_queue
+        else:
+            data["attributes"]["status"]["device"] = "status-device-" + name
+
+        if status_queue:
+            data["attributes"]["status"]["queue"] = status_queue
+        else:
+            data["attributes"]["status"]["queue"] = "status-queue-" + name
+
+        topology = self.req.post('/Topologies', data=json.dumps(data))
+
+        return topology
+
+    def edit_topology(self, name, description=None, adjacency_matrix=None,
+                      qubits=None, execution_types=None, is_simulator=None,
+                      is_hidden=None, tasks_queue=None,
+                      results_queue=None, device_status_queue=None,
+                      status_queue=None, is_default=None,
+                      qasm_header=None, picture_url=None,
+                      access_token=None, user_id=None):
+        """
+        Edit topology by name
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        data = self.get_topology(name)
+
+        if not data:
+            return {"error": "Not topology found: " + name}
+
+        e_types = None
+        if execution_types is not None:
+            e_types = []
+            if isinstance(execution_types, (list, tuple)):
+                for e_type in execution_types:
+                    if (e_type.lower() == 'simulator'):
+                        e_types.append('sim_trivial_2')
+                    elif (e_type.lower() == 'real'):
+                        e_types.append('real')
+                    else:
+                        return {"error": "Invalid Execution Type" +
+                                         ", only allowed" +
+                                         " 'simulator' and 'real': " + e_type}
+            else:
+                return {"error": "Not valid execution types"}
+
+            if (len(e_types) == 0):
+                return {"error": "Not valid execution types"}
+
+        if description:
+            data["description"] = {
+                "en": description
+            }
+
+        if adjacency_matrix:
+            data["topology"]["adjacencyMatrix"] = adjacency_matrix
+
+        if qubits:
+            data["qubits"] = qubits
+            
+        if execution_types is not None:
+            data["executionTypes"] = e_types
+
+        if is_simulator is not None:
+            data["isSimulator"] = is_simulator
+
+        if is_hidden is not None:
+            data["isHidden"] = is_hidden
+
+        if tasks_queue:
+            data["attributes"]["queues"]["tasks"] = tasks_queue
+        else:
+            data["attributes"]["queues"]["tasks"] = "tasks-" + name
+
+        if results_queue:
+            data["attributes"]["queues"]["results"] = results_queue
+        else:
+            data["attributes"]["queues"]["results"] = "results-" + name
+
+        if device_status_queue:
+            data["attributes"]["status"]["device"] = device_status_queue
+        else:
+            data["attributes"]["status"]["device"] = "status-device-" + name
+
+        if status_queue:
+            data["attributes"]["status"]["queue"] = status_queue
+        else:
+            data["attributes"]["status"]["queue"] = "status-queue-" + name
+
+        if is_default is not None:
+            data["default"] = is_default
+
+        if qasm_header:
+            data["qasmHeader"] = qasm_header
+
+        if picture_url:
+            data["picture"] = picture_url
+
+        topology = self.req.put('/Topologies/' + data["id"],
+                                data=json.dumps(data))
+
+        return topology
+
+    def get_user_groups_to_topology(self, name_topology=None,
+                                    name_user_group=None,
+                                    access_token=None, user_id=None):
+        """
+        Get the relations between an user group to a topology
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        id_topology = self._get_topology_id_from_name(name_topology,
+                                                      access_token=access_token, user_id=user_id)  # noqa
+
+        id_user_group = self._get_user_group_id_from_name(name_user_group)
+
+        params = ''
+        if id_user_group or id_topology:
+            where = {
+                "where": {}
+            }
+
+            if id_topology:
+                where["where"]["topologyId"] = id_topology
+            if id_user_group:
+                where["where"]["userGroupId"] = id_user_group
+
+            params = "&filter="+json.dumps(where)
+        tugs = self.req.get('/TopologyUserGroups/', params)
+        return tugs
+
+    def set_user_group_to_topology(self, name_topology, name_user_group,
+                                   can_always_run=False,
+                                   access_token=None, user_id=None):
+        """
+        Set an user group to a topology
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        id_topology = self._get_topology_id_from_name(name_topology,
+                                                      access_token=access_token, user_id=user_id)  # noqa
+
+        id_user_group = self._get_user_group_id_from_name(name_user_group)
+        
+        if id_user_group and id_topology:
+            data = {
+                "userGroupId": id_user_group,
+                "topologyId": id_topology,
+                "canAlwaysRun": can_always_run
+            }
+            tug = self.req.post('/TopologyUserGroups/', data=json.dumps(data))
+            return tug
+        else:
+            raise ApiError(usr_msg='User group or topology doesnt exist ' +
+                           name_user_group + ":" + name_topology)
+
+    def unset_user_group_to_topology(self, name_topology=None,
+                                     name_user_group=None,
+                                     access_token=None, user_id=None):
+        """
+        Unset an user group to a topology
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        tugs = self.get_user_groups_to_topology(name_topology, name_user_group)
+
+        deleted = 0
+        for tug in tugs:
+            if "id" in tug:
+                unset = self.req.delete('/TopologyUserGroups/' + tug["id"])
+                if "count" in unset:
+                    deleted += unset["count"]
+        return {"count": deleted}
+
+    def get_backend_by_name(self, name,
+                            access_token=None, user_id=None):
+        """
+        Create a backend by admin
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+        
+        where = {
+            "where": {
+                "name": name
+            }
+        }
+        params = "&filter="+json.dumps(where)
+
+        backend = self.req.get('/Devices/findOne', params)
+        return backend
+
+    def get_backends(self, access_token=None, user_id=None):
+        """
+        Create a backend by admin
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+        
+        backends = self.req.get('/Devices')
+        return backends
+
+    def create_backend(self, name, serial_number, type_device, version,
+                       chip_name, url_details, name_topology, status='On',
+                       description=None, gate_set=None, date_online=None,
+                       access_token=None, user_id=None):
+        """
+        Create a backend by admin
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        id_topology = self._get_topology_id_from_name(name_topology)
+
+        if not id_topology:
+            return {"error": "Not topology valid: " + name_topology}
+
+        if ((type_device != 'Simulator') and (type_device != 'Real')):
+            return {"error": "Not type of the device valid: " + type_device +
+                    ". Only allowed 'Simulator' or 'Real'"}
+
+        if ((status != 'On') and (status != 'Off')):
+            return {"error": "Not status of the device valid: " + type_device +
+                    ". Only allowed 'On' or 'Off'"}
+
+        if date_online:
+            try:
+                datetime.strptime(date_online, "%Y-%m-%dT%H:%M:%S.%fZ")
+            except ValueError:
+                return {"error": "Not date_online valid in ISO Format" +
+                        " (YYYY-MM-DDTHH:mm:ss.sssZ): " + date_online}
+
+        data = {
+            'name': name,
+            'serialNumber': serial_number,
+            'type': type_device,
+            'version': version,
+            'chipName': chip_name,
+            'docUrl': url_details,
+            'status': status,
+            'onlineDate': date_online,
+            'topologyId': id_topology,
+            'description': description,
+            'gateSet': gate_set
+        }
+
+        backend = self.req.post('/Devices', data=json.dumps(data))
+        return backend
+
+    def edit_backend(self, name, serial_number=None, type_device=None,
+                     version=None, chip_name=None, url_details=None,
+                     name_topology=None, status=None, description=None,
+                     gate_set=None, date_online=None,
+                     access_token=None, user_id=None):
+        """
+        Edit a backend by admin
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            return {"error": "Not credentials valid"}
+
+        data = self.get_backend_by_name(name)
+
+        if not data or ("id" not in data):
+            return {"error": "Not backend valid: " + name}
+
+        if name_topology:
+            id_topology = self._get_topology_id_from_name(name_topology)
+
+            if not id_topology:
+                return {"error": "Not topology valid: " + name_topology}
+
+            data["topologyId"] = id_topology
+
+        if type_device:
+            if ((type_device != 'Simulator') and (type_device != 'Real')):
+                return {"error": "Not type of the device valid: " +
+                        type_device +
+                        ". Only allowed 'Simulator' or 'Real'"}
+            data["type"] = type_device
+
+        if status:
+            if ((status != 'On') and (status != 'Off')):
+                return {"error": "Not status of the device valid: " +
+                        type_device +
+                        ". Only allowed 'On' or 'Off'"}
+            data["status"] = status
+
+        if date_online:
+            try:
+                datetime.strptime(date_online, "%Y-%m-%dT%H:%M:%S.%fZ")
+            except ValueError:
+                return {"error": "Not date_online valid in ISO Format" +
+                        " (YYYY-MM-DDTHH:mm:ss.sssZ): " + date_online}
+
+        if serial_number:
+            data["serialNumber"] = serial_number
+
+        if version:
+            data["version"] = version
+        
+        if chip_name:
+            data["chipName"] = chip_name
+
+        if url_details:
+            data["docUrl"] = url_details
+
+        if date_online:
+            data["onlineDate"] = date_online
+
+        if description:
+            data["description"] = description
+        
+        if gate_set:
+            data["gateSet"] = gate_set
+
+        backend = self.req.put('/Devices/' + data["id"], data=json.dumps(data))
+        return backend
 
 
 class ApiError(Exception):
