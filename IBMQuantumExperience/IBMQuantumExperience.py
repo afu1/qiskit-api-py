@@ -920,7 +920,7 @@ class IBMQuantumExperience(object):
     def edit_user_group(self, name, description, is_general=False, 
                         access_token=None, user_id=None):
         """
-        Create an user group to asign to users
+        Edit an user group by name
         """
         if access_token:
             self.req.credential.set_token(access_token)
@@ -1329,7 +1329,7 @@ class IBMQuantumExperience(object):
     def get_backend_by_name(self, name,
                             access_token=None, user_id=None):
         """
-        Create a backend by admin
+        Get a backend by name
         """
         if access_token:
             self.req.credential.set_token(access_token)
@@ -1350,7 +1350,7 @@ class IBMQuantumExperience(object):
 
     def get_backends(self, access_token=None, user_id=None):
         """
-        Create a backend by admin
+        Get all backends by admin
         """
         if access_token:
             self.req.credential.set_token(access_token)
