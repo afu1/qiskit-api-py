@@ -211,6 +211,14 @@ To know the devices where you can run (by name):
 api.available_backends()
 ```
 
+#### Get QX API Version
+
+To know the version of the QX API:
+
+```python
+api.api_version()
+```
+
 
 ## Deploy and Test
 

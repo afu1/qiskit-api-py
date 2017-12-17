@@ -207,6 +207,13 @@ measure q[24] -> c[24];
                           [{'qasm': qasm}],
                           backend, shots)
 
+    def test_qx_api_version(self):
+        '''
+        Check the version of the QX API
+        '''
+        version = self.api.api_version()
+        self.assertGreaterEqual(int(version.split(".")[0]), 4)
+
 
 if __name__ == '__main__':
     suite = unittest.TestLoader().loadTestsFromTestCase(TestQX)

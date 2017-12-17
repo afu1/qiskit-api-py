@@ -17,6 +17,47 @@ logging.basicConfig()
 CLIENT_APPLICATION = 'qiskit-api-py'
 
 
+def get_job_url(config, hub, group, project):
+    """
+    Util method to get job url
+    """
+    if ((config is not None) and ('hub' in config) and (hub is None)):
+        hub = config["hub"]
+    if ((config is not None) and ('group' in config) and (group is None)):
+        group = config["group"]
+    if ((config is not None) and ('project' in config) and (project is None)):
+        project = config["project"]
+    if ((hub is not None) and (group is not None) and (project is not None)):
+        return '/Network/{}/Groups/{}/Projects/{}/jobs'.format(hub, group, project)
+    return '/Jobs'
+
+
+def get_backend_stats_url(config, hub, backend_type):
+    """
+    Util method to get backend stats url
+    """
+    if ((config is not None) and ('hub' in config) and (hub is None)):
+        hub = config["hub"]
+    if (hub is not None):
+        return '/Network/{}/devices/{}'.format(hub, backend_type)
+    return '/Backends/{}'.format(backend_type)
+
+
+def get_backend_url(config, hub, group, project):
+    """
+    Util method to get backend url
+    """
+    if ((config is not None) and ('hub' in config) and (hub is None)):
+        hub = config["hub"]
+    if ((config is not None) and ('group' in config) and (group is None)):
+        group = config["group"]
+    if ((config is not None) and ('project' in config) and (project is None)):
+        project = config["project"]
+    if ((hub is not None) and (group is not None) and (project is not None)):
+        return '/Network/{}/Groups/{}/Projects/{}/devices'.format(hub, group, project)
+    return '/Backends'
+
+
 class _Credentials(object):
     """
     The Credential class to manage the tokens
@@ -262,7 +303,11 @@ class _Request(object):
                 respond.text))
             return self._parse_response(respond)
         try:
-            self.result = respond.json()
+            if (str(respond.headers['content-type']).startswith("text/html;")):
+                self.result = respond.text
+                return True
+            else:
+                self.result = respond.json()
         except (json.JSONDecodeError, ValueError):
             usr_msg = 'device server returned unexpected http response'
             dev_msg = usr_msg + ': ' + respond.text
@@ -318,6 +363,7 @@ class IBMQuantumExperience(object):
 
     def __init__(self, token=None, config=None, verify=True):
         """ If verify is set to false, ignore SSL certificate errors """
+        self.config = config
         self.req = _Request(token, config=config, verify=verify)
 
     def _check_backend(self, backend, endpoint):
@@ -544,7 +590,8 @@ class IBMQuantumExperience(object):
             return respond
 
     def run_job(self, qasms, backend='simulator', shots=1,
-                max_credits=3, seed=None, access_token=None, user_id=None):
+                max_credits=3, seed=None, hub=None, group=None,
+                project=None, access_token=None, user_id=None):
         """
         Execute a job
         """
@@ -573,10 +620,15 @@ class IBMQuantumExperience(object):
             return {"error": "Not seed allowed. Max 10 digits."}
 
         data['backend']['name'] = backend_type
-        job = self.req.post('/Jobs', data=json.dumps(data))
+
+        url = get_job_url(self.config, hub, group, project)
+
+        job = self.req.post(url, data=json.dumps(data))
+
         return job
 
-    def get_job(self, id_job, access_token=None, user_id=None):
+    def get_job(self, id_job, hub=None, group=None, project=None,
+                access_token=None, user_id=None):
         """
         Get the information about a job, by its id
         """
@@ -594,7 +646,12 @@ class IBMQuantumExperience(object):
             respond["status"] = 'Error'
             respond["error"] = "Job ID not specified"
             return respond
-        job = self.req.get('/Jobs/' + id_job)
+
+        url = get_job_url(self.config, hub, group, project)
+
+        url += '/' + id_job
+
+        job = self.req.get(url)
 
         # To remove result object and add the attributes to data object
         if 'qasms' in job:
@@ -648,7 +705,7 @@ class IBMQuantumExperience(object):
 
         return ret
 
-    def backend_calibration(self, backend='ibmqx4', access_token=None, user_id=None):
+    def backend_calibration(self, backend='ibmqx4', hub=None, access_token=None, user_id=None):
         """
         Get the calibration of a real chip
         """
@@ -670,11 +727,13 @@ class IBMQuantumExperience(object):
             ret["calibrations"] = None
             return ret
 
-        ret = self.req.get('/Backends/' + backend_type + '/calibration')
+        url = get_backend_stats_url(self.config, hub, backend_type)
+
+        ret = self.req.get(url + '/calibration')
         ret["backend"] = backend_type
         return ret
 
-    def backend_parameters(self, backend='ibmqx4', access_token=None, user_id=None):
+    def backend_parameters(self, backend='ibmqx4', hub=None, access_token=None, user_id=None):
         """
         Get the parameters of calibration of a real chip
         """
@@ -696,11 +755,13 @@ class IBMQuantumExperience(object):
             ret["parameters"] = None
             return ret
 
-        ret = self.req.get('/Backends/' + backend_type + '/parameters')
+        url = get_backend_stats_url(self.config, hub, backend_type)
+
+        ret = self.req.get(url + '/parameters')
         ret["backend"] = backend_type
         return ret
 
-    def available_backends(self, access_token=None, user_id=None):
+    def available_backends(self, hub=None, group=None, project=None, access_token=None, user_id=None):
         """
         Get the backends available to use in the QX Platform
         """
@@ -711,7 +772,13 @@ class IBMQuantumExperience(object):
         if not self.check_credentials():
             raise CredentialsError('credentials invalid')
         else:
-            return [backend for backend in self.req.get('/Backends')
+
+            url = get_backend_url(self.config, hub, group, project)
+
+            ret = self.req.get(url)
+            if (ret is not None) and (isinstance(ret, dict)):
+                return []
+            return [backend for backend in ret
                     if backend.get('status') == 'on']
 
     def available_backend_simulators(self, access_token=None, user_id=None):
@@ -725,13 +792,16 @@ class IBMQuantumExperience(object):
         if not self.check_credentials():
             raise CredentialsError('credentials invalid')
         else:
-            return [backend for backend in self.req.get('/Backends')
+            ret = self.req.get('/Backends')
+            if (ret is not None) and (isinstance(ret, dict)):
+                return []
+            return [backend for backend in ret
                     if backend.get('status') == 'on' and
                     backend.get('simulator') is True]
 
     def get_my_credits(self, access_token=None, user_id=None):
         """
-        Get the the credits by user to use in the QX Platform
+        Get the credits by user to use in the QX Platform
         """
         if access_token:
             self.req.credential.set_token(access_token)
@@ -749,7 +819,13 @@ class IBMQuantumExperience(object):
                     del user_data["credit"]["lastRefill"]
                 return user_data["credit"]
             return {}
-        
+
+    def api_version(self):
+        """
+        Get the API Version of the QX Platform
+        """
+        return self.req.get('/version')
+
 
 class ApiError(Exception):
     """
