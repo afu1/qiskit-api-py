@@ -12,6 +12,7 @@ import sys
 import traceback
 import requests
 import re
+# from .HTTPProxyDigestAuth import HTTPProxyDigestAuth
 
 logging.basicConfig()
 CLIENT_APPLICATION = 'qiskit-api-py'
@@ -64,10 +65,11 @@ class _Credentials(object):
     """
     config_base = {'url': 'https://quantumexperience.ng.bluemix.net/api'}
 
-    def __init__(self, token, config=None, verify=True):
+    def __init__(self, token, config=None, verify=True, proxies=None):
         self.token_unique = token
         self.verify = verify
         self.config = config
+        self.proxies = proxies
         if not verify:
             import requests.packages.urllib3 as urllib3
             urllib3.disable_warnings()
@@ -95,19 +97,24 @@ class _Credentials(object):
         """Obtain the token to access to QX Platform.
 
         Raises:
-            CredentialsError: when token is invalid.
+            CredentialsError: when token is invalid or the user has not
+                accepted the license.
+            ApiError: when the response from the server couldn't be parsed.
         """
         client_application = CLIENT_APPLICATION
         if self.config and ("client_application" in self.config):
             client_application += ':' + self.config["client_application"]
         headers = {'x-qx-client-application': client_application}
         if self.token_unique:
-            self.data_credentials = requests.post(str(self.config.get('url') +
-                                                  "/users/loginWithToken"),
-                                                  data={'apiToken':
-                                                        self.token_unique},
-                                                  verify=self.verify,
-                                                  headers=headers).json()
+            try:
+                response = requests.post(str(self.config.get('url') +
+                                             "/users/loginWithToken"),
+                                         data={'apiToken': self.token_unique},
+                                         verify=self.verify,
+                                         headers=headers,
+                                         proxies=self.proxies)
+            except requests.RequestException as e:
+                raise ApiError('error during login: %s' % str(e))
         elif config and ("email" in config) and ("password" in config):
             email = config.get('email', None)
             password = config.get('password', None)
@@ -115,13 +122,36 @@ class _Credentials(object):
                 'email': email,
                 'password': password
             }
-            self.data_credentials = requests.post(str(self.config.get('url') +
-                                                  "/users/login"),
-                                                  data=credentials,
-                                                  verify=self.verify,
-                                                  headers=headers).json()
+            try:
+                response = requests.post(str(self.config.get('url') +
+                                             "/users/login"),
+                                         data=credentials,
+                                         verify=self.verify,
+                                         headers=headers,
+                                         proxies=self.proxies)
+            except requests.RequestException as e:
+                raise ApiError('error during login: %s' % str(e))
         else:
             raise CredentialsError('invalid token')
+
+        if response.status_code == 401:
+            error_message = None
+            try:
+                # For 401: ACCEPT_LICENSE_REQUIRED, a detailed message is
+                # present in the response and passed to the exception.
+                error_message = response.json()['error']['message']
+            except:
+                pass
+
+            if error_message:
+                raise CredentialsError('error during login: %s' % error_message)
+            else:
+                raise CredentialsError('invalid token')
+        try:
+            response.raise_for_status()
+            self.data_credentials = response.json()
+        except (requests.HTTPError, ValueError) as e:
+            raise ApiError('error during login: %s' % str(e))
 
         if self.get_token() is None:
             raise CredentialsError('invalid token')
@@ -166,9 +196,14 @@ class _Request(object):
         self.verify = verify
         self.client_application = CLIENT_APPLICATION
         self.config = config
+        self.proxies = None
+        if ((config is not None) and ('proxies' in config) and
+           ('urls' in config['proxies'])):
+            self.proxies = self.config['proxies']['urls']
         if self.config and ("client_application" in self.config):
             self.client_application += ':' + self.config["client_application"]
-        self.credential = _Credentials(token, self.config, verify)
+        self.credential = _Credentials(token, self.config, verify,
+                                       proxies=self.proxies)
         self.log = logging.getLogger(__name__)
         if not isinstance(retries, int):
             raise TypeError('post retries must be positive integer')
@@ -201,10 +236,11 @@ class _Request(object):
         retries = self.retries
         while retries > 0:
             respond = requests.post(url, data=data, headers=headers,
-                                    verify=self.verify)
+                                    verify=self.verify, proxies=self.proxies)
             if not self.check_token(respond):
                 respond = requests.post(url, data=data, headers=headers,
-                                        verify=self.verify)
+                                        verify=self.verify,
+                                        proxies=self.proxies)
 
             if self._response_good(respond):
                 if self.result:
@@ -234,10 +270,11 @@ class _Request(object):
         retries = self.retries
         while retries > 0:
             respond = requests.put(url, data=data, headers=headers,
-                                    verify=self.verify)
+                                   verify=self.verify, proxies=self.proxies)
             if not self.check_token(respond):
                 respond = requests.put(url, data=data, headers=headers,
-                                        verify=self.verify)
+                                       verify=self.verify,
+                                       proxies=self.proxies)
             if self._response_good(respond):
                 if self.result:
                     return self.result
@@ -266,10 +303,11 @@ class _Request(object):
         retries = self.retries
         headers = {'x-qx-client-application': self.client_application}
         while retries > 0:  # Repeat until no error
-            respond = requests.get(url, verify=self.verify, headers=headers)
+            respond = requests.get(url, verify=self.verify, headers=headers,
+                                   proxies=self.proxies)
             if not self.check_token(respond):
                 respond = requests.get(url, verify=self.verify,
-                                       headers=headers)
+                                       headers=headers, proxies=self.proxies)
             if self._response_good(respond):
                 if self.result:
                     return self.result
@@ -430,7 +468,7 @@ class IBMQuantumExperience(object):
         if not self.check_credentials():
             raise CredentialsError('credentials invalid')
         execution = self.req.get('/Executions/' + id_execution)
-        if execution["codeId"]:
+        if "codeId" in execution:
             execution['code'] = self.get_code(execution["codeId"])
         return execution
 
@@ -590,8 +628,8 @@ class IBMQuantumExperience(object):
             return respond
 
     def run_job(self, qasms, backend='simulator', shots=1,
-                max_credits=3, seed=None, hub=None, group=None,
-                project=None, access_token=None, user_id=None):
+                max_credits=None, seed=None, hub=None, group=None,
+                project=None, hpc=None, access_token=None, user_id=None):
         """
         Execute a job
         """
@@ -606,8 +644,12 @@ class IBMQuantumExperience(object):
             qasm['qasm'] = qasm['qasm'].replace('OPENQASM 2.0;', '')
         data = {'qasms': qasms,
                 'shots': shots,
-                'maxCredits': max_credits,
                 'backend': {}}
+        if max_credits:
+            data['maxCredits'] = max_credits
+
+        if hpc:
+            data['hpc'] = hpc
 
         backend_type = self._check_backend(backend, 'job')
 

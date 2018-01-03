@@ -215,6 +215,29 @@ measure q[24] -> c[24];
         self.assertGreaterEqual(int(version.split(".")[0]), 4)
 
 
+class TestAuthentication(unittest.TestCase):
+    """
+    Tests for the authentication features. These tests are in a separate
+    TestCase as they need to control the instantiation of
+    `IBMQuantumExperience` directly.
+    """
+    def test_url_404(self):
+        with self.assertRaises(ApiError):
+            api = IBMQuantumExperience(
+                API_TOKEN,
+                config={'url': 'https://qcwi-lsf.mybluemix.net/api/API_TEST'})
+
+    def test_invalid_token(self):
+        with self.assertRaises(ApiError):
+            api = IBMQuantumExperience('INVALID_TOKEN')
+
+    def test_url_unreachable(self):
+        with self.assertRaises(ApiError):
+            api = IBMQuantumExperience(
+                API_TOKEN, config={'url': 'INVALID_URL'})
+
+
+
 if __name__ == '__main__':
     suite = unittest.TestLoader().loadTestsFromTestCase(TestQX)
     unittest.TextTestRunner(verbosity=2).run(suite)
