@@ -12,6 +12,7 @@ import sys
 import traceback
 import requests
 import re
+from requests_ntlm import HttpNtlmAuth
 # from .HTTPProxyDigestAuth import HTTPProxyDigestAuth
 
 logging.basicConfig()
@@ -65,11 +66,23 @@ class _Credentials(object):
     """
     config_base = {'url': 'https://quantumexperience.ng.bluemix.net/api'}
 
-    def __init__(self, token, config=None, verify=True, proxies=None):
+    def __init__(self, token, config=None, verify=True, proxy_urls=None,
+                 ntlm_credentials=None):
         self.token_unique = token
         self.verify = verify
         self.config = config
-        self.proxies = proxies
+        self.proxy_urls = proxy_urls
+        self.ntlm_credentials = ntlm_credentials
+
+        # Set the extra arguments to requests (proxy and auth).
+        self.extra_args = {}
+        if self.proxy_urls:
+            self.extra_args['proxies'] = self.proxy_urls
+        if self.ntlm_credentials:
+            self.extra_args['auth'] = HttpNtlmAuth(
+                self.ntlm_credentials['username'],
+                self.ntlm_credentials['password'])
+
         if not verify:
             import requests.packages.urllib3 as urllib3
             urllib3.disable_warnings()
@@ -105,6 +118,7 @@ class _Credentials(object):
         if self.config and ("client_application" in self.config):
             client_application += ':' + self.config["client_application"]
         headers = {'x-qx-client-application': client_application}
+
         if self.token_unique:
             try:
                 response = requests.post(str(self.config.get('url') +
@@ -112,7 +126,7 @@ class _Credentials(object):
                                          data={'apiToken': self.token_unique},
                                          verify=self.verify,
                                          headers=headers,
-                                         proxies=self.proxies)
+                                         **self.extra_args)
             except requests.RequestException as e:
                 raise ApiError('error during login: %s' % str(e))
         elif config and ("email" in config) and ("password" in config):
@@ -128,7 +142,7 @@ class _Credentials(object):
                                          data=credentials,
                                          verify=self.verify,
                                          headers=headers,
-                                         proxies=self.proxies)
+                                         **self.extra_args)
             except requests.RequestException as e:
                 raise ApiError('error during login: %s' % str(e))
         else:
@@ -196,14 +210,48 @@ class _Request(object):
         self.verify = verify
         self.client_application = CLIENT_APPLICATION
         self.config = config
-        self.proxies = None
-        if ((config is not None) and ('proxies' in config) and
-           ('urls' in config['proxies'])):
-            self.proxies = self.config['proxies']['urls']
+
+        # Set the proxy information, if present, from the configuration,
+        # with the following format:
+        # config = {
+        #     'proxies': {
+        #         # If using 'urls', assume basic auth or no auth.
+        #         'urls': {
+        #             'http': 'http://user:password@1.2.3.4:5678',
+        #             'https': 'http://user:password@1.2.3.4:5678',
+        #         }
+        #         # If using 'ntlm', assume NTLM authentication.
+        #         'username_ntlm': 'domain\\username',
+        #         'password_ntlm': 'password'
+        #     }
+        # }
+
+        # Set the basic proxy settings, if present.
+        self.proxy_urls = None
+        self.ntlm_credentials = None
+        if config and 'proxies' in config:
+            if 'urls' in config['proxies']:
+                self.proxy_urls = self.config['proxies']['urls']
+            if 'username_ntlm' and 'password_ntlm' in config['proxies']:
+                self.ntlm_credentials = {
+                    'username': self.config['proxies']['username_ntlm'],
+                    'password': self.config['proxies']['password_ntlm']
+                }
+
+        # Set the extra arguments to requests (proxy and auth).
+        self.extra_args = {}
+        if self.proxy_urls:
+            self.extra_args['proxies'] = self.proxy_urls
+        if self.ntlm_credentials:
+            self.extra_args['auth'] = HttpNtlmAuth(
+                self.ntlm_credentials['username'],
+                self.ntlm_credentials['password'])
+
         if self.config and ("client_application" in self.config):
             self.client_application += ':' + self.config["client_application"]
         self.credential = _Credentials(token, self.config, verify,
-                                       proxies=self.proxies)
+                                       proxy_urls=self.proxy_urls,
+                                       ntlm_credentials=self.ntlm_credentials)
         self.log = logging.getLogger(__name__)
         if not isinstance(retries, int):
             raise TypeError('post retries must be positive integer')
@@ -236,11 +284,11 @@ class _Request(object):
         retries = self.retries
         while retries > 0:
             respond = requests.post(url, data=data, headers=headers,
-                                    verify=self.verify, proxies=self.proxies)
+                                    verify=self.verify, **self.extra_args)
             if not self.check_token(respond):
                 respond = requests.post(url, data=data, headers=headers,
                                         verify=self.verify,
-                                        proxies=self.proxies)
+                                        **self.extra_args)
 
             if self._response_good(respond):
                 if self.result:
@@ -270,11 +318,11 @@ class _Request(object):
         retries = self.retries
         while retries > 0:
             respond = requests.put(url, data=data, headers=headers,
-                                   verify=self.verify, proxies=self.proxies)
+                                   verify=self.verify, **self.extra_args)
             if not self.check_token(respond):
                 respond = requests.put(url, data=data, headers=headers,
                                        verify=self.verify,
-                                       proxies=self.proxies)
+                                       **self.extra_args)
             if self._response_good(respond):
                 if self.result:
                     return self.result
@@ -304,10 +352,10 @@ class _Request(object):
         headers = {'x-qx-client-application': self.client_application}
         while retries > 0:  # Repeat until no error
             respond = requests.get(url, verify=self.verify, headers=headers,
-                                   proxies=self.proxies)
+                                   **self.extra_args)
             if not self.check_token(respond):
                 respond = requests.get(url, verify=self.verify,
-                                       headers=headers, proxies=self.proxies)
+                                       headers=headers, **self.extra_args)
             if self._response_good(respond):
                 if self.result:
                     return self.result

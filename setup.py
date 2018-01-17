@@ -2,15 +2,16 @@ from setuptools import setup
 
 setup(name='IBMQuantumExperience',
       packages=['IBMQuantumExperience'],  # this must be the same as the name above
-      version='1.8.25',  # this should match __init__.__version__
+      version='1.8.26',  # this should match __init__.__version__
       author='IBM Research ETX',
       description='A Python library for the Quantum Experience API.',
       author_email='pacom@us.ibm.com',
-      url='https://github.com/IBM/qiskit-api-py',
+      url='https://github.com/QISKit/qiskit-api-py',
       keywords=['ibm', 'quantum computer', 'quantum experience'],
       license='Apache-2.0',
       install_requires=[
-          'requests'
+          'requests',
+          'requests_ntlm'
       ],
       classifiers=(
           'Development Status :: 5 - Production/Stable',
