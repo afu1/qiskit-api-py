@@ -768,6 +768,37 @@ class IBMQuantumExperience(object):
         jobs = self.req.get('/Jobs', '&filter={"limit":' + str(limit) + '}')
         return jobs
 
+    def cancel_job(self, id_job, hub, group, project,
+                   access_token=None, user_id=None):
+        """
+        Cancel the information about a job, by its id
+        """
+        if access_token:
+            self.req.credential.set_token(access_token)
+        if user_id:
+            self.req.credential.set_user_id(user_id)
+        if not self.check_credentials():
+            respond = {}
+            respond["status"] = 'Error'
+            respond["error"] = "Not credentials valid"
+            return respond
+        if not id_job:
+            respond = {}
+            respond["status"] = 'Error'
+            respond["error"] = "Job ID not specified"
+            return respond
+        if not hub or not group or not project:
+            respond = {}
+            respond["status"] = 'Error'
+            respond["error"] = "Hub, Group or Project not specified"
+            return respond
+
+        url = '/Network/{}/Groups/{}/Projects/{}/jobs/{}/cancel'.format(hub, group, project, id_job)
+
+        res = self.req.post(url)
+
+        return res
+
     def backend_status(self, backend='ibmqx4', access_token=None, user_id=None):
         """
         Get the status of a chip
